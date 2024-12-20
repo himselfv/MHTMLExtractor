@@ -154,6 +154,9 @@ class MHTMLExtractor:
                 location = content_location_match.group(1)
                 parsed_url = urlparse(location)
                 base_name = os.path.basename(unquote(parsed_url.path)) or parsed_url.netloc
+                # Avoid .css.css stuff
+                if extension and base_name.endswith(extension):
+                    base_name = base_name[:-len(extension)]
 
                 if self.add_hash_to_names:
                     url_hash = hashlib.md5(location.encode()).hexdigest()
