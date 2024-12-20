@@ -154,22 +154,26 @@ class MHTMLExtractor:
                 location = content_location_match.group(1)
                 parsed_url = urlparse(location)
                 base_name = os.path.basename(unquote(parsed_url.path)) or parsed_url.netloc
-                # Avoid .css.css stuff
+                # Remove basename extension at least if it matches the content-type guessed one
                 if extension and base_name.endswith(extension):
                     base_name = base_name[:-len(extension)]
 
-                if self.add_hash_to_names:
-                    url_hash = hashlib.md5(location.encode()).hexdigest()
-                    filename = f"{base_name}_{url_hash}{extension or ''}"
-                else:
-                    filename = f"{base_name}{extension or ''}"
-                original_filename = filename
-                counter = 1
-
                 # Handle potential filename conflicts by appending a counter
-                while os.path.exists(os.path.join(self.output_dir, filename)):
-                    filename = f"{original_filename}_{counter}"
-                    counter += 1
+                counter = None
+                while True:
+                    filename = f"{base_name}"
+                    if self.add_hash_to_names:
+                        url_hash = hashlib.md5(location.encode()).hexdigest()
+                        filename += f"_{url_hash}"
+                    if counter is not None:
+                        filename += f"_{counter}"
+                        counter += 1
+                    else:
+                        counter = 1
+                    if extension: filename += extension
+                    if not os.path.exists(os.path.join(self.output_dir, filename)):
+                        break
+                    # Otherwise go for another round
             else:
                 # If Content-Location isn't provided, generate a random filename
                 filename = str(uuid.uuid4()) + (extension or "")
