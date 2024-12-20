@@ -19,13 +19,50 @@ logging.basicConfig(
 )
 
 
+class FolderStorage:
+    """
+        output_dir (str): The directory where extracted files will be saved.
+    """
+
+    def __init__(self, output_dir):
+        """
+            output_dir (str): Output directory for the extracted files.
+        """
+        self.output_dir = output_dir
+        self.ensure_directory_exists(self.output_dir)
+
+    def ensure_directory_exists(self, directory_path):
+        try:
+            if not os.path.exists(directory_path):
+                os.makedirs(directory_path)
+        except Exception as e:
+            logging.error(f"Error during directory setup: {e}")
+
+    def clear_contents(self):
+        try:
+            for filename in os.listdir(directory_path):
+                file_path = os.path.join(directory_path, filename)
+                if os.path.isfile(file_path):
+                    os.unlink(file_path)
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path)
+        except Exception as e:
+            logging.error(f"Error during directory setup: {e}")
+
+    def path_exists(self, filename):
+        return os.path.exists(os.path.join(self.output_dir, filename))
+
+    def open(self, filename, *args, **kwargs):
+        return open(os.path.join(self.output_dir, filename), *args, **kwargs)
+
+
 class MHTMLExtractor:
     """
     A class to extract files from MHTML documents.
 
     Attributes:
         mhtml_path (str): The path to the MHTML document.
-        output_dir (str): The directory where extracted files will be saved.
+        fs (Storage object): An object which provides filesystem-like access (directory or zip).
         buffer_size (int): The size of the buffer used when reading the MHTML file.
         boundary (str): The boundary string used in the MHTML document.
         extracted_count (int): A counter for the number of files extracted.
@@ -35,39 +72,25 @@ class MHTMLExtractor:
     add_hash_to_names = True
     use_first_file_as_index = False
 
-    def __init__(self, mhtml_path, output_dir, buffer_size=8192, clear_output_dir=False):
+    def __init__(self, mhtml_path, fs, buffer_size=8192, clear_output_dir=False):
         """
         Initialize the MHTMLExtractor class.
 
         Args:
             mhtml_path (str): Path to the MHTML document.
-            output_dir (str): Output directory for the extracted files.
             buffer_size (int, optional): Buffer size for reading the MHTML file. Defaults to 8192.
             clear_output_dir (bool, optional): If True, clears the output directory before extraction. Defaults to False.
         """
         self.mhtml_path = mhtml_path
-        self.output_dir = output_dir
+        self.fs = fs
         self.buffer_size = buffer_size
         self.boundary = None
         self.extracted_count = 0
         self.url_mapping = {}  # Mapping between Content-Location and new filenames
         self.saved_html_files = []  # List to keep track of saved HTML filenames
 
-        self.ensure_directory_exists(self.output_dir, clear_output_dir)
-
-    def ensure_directory_exists(self, directory_path, clear=False):
-        try:
-            if not os.path.exists(directory_path):
-                os.makedirs(directory_path)
-            elif clear:
-                for filename in os.listdir(directory_path):
-                    file_path = os.path.join(directory_path, filename)
-                    if os.path.isfile(file_path):
-                        os.unlink(file_path)
-                    elif os.path.isdir(file_path):
-                        shutil.rmtree(file_path)
-        except Exception as e:
-            logging.error(f"Error during directory setup: {e}")
+        if clear_output_dir:
+            self.fs.clear_contents()
 
     def is_text_content(decoded_content):
         """Determine if the given content is likely to be human-readable text."""
@@ -171,14 +194,15 @@ class MHTMLExtractor:
                     else:
                         counter = 1
                     if extension: filename += extension
-                    if not os.path.exists(os.path.join(self.output_dir, filename)):
+                    if not self.fs.path_exists(filename):
                         break
                     # Otherwise go for another round
             else:
                 # If Content-Location isn't provided, generate a random filename
                 filename = str(uuid.uuid4()) + (extension or "")
+
             if self.use_first_file_as_index and (extension in ['.htm', '.html']):
-                if not os.path.exists(os.path.join(self.output_dir, 'index.html')):
+                if not self.fs.path_exists('index.html'):
                     filename = 'index.html'
             return filename
         except Exception as e:
@@ -258,17 +282,17 @@ class MHTMLExtractor:
             self.saved_html_files.append(filename)
 
         # Try to write the decoded content to the specified file
-        with open(os.path.join(self.output_dir, filename), "wb") as out_file:
+        with self.fs.open(filename, "wb") as out_file:
             out_file.write(decoded_body)
 
-    def _update_html_links(self, filepath, sorted_urls, hash_pattern, no_css=False, no_images=False, html_only=False):
+    def _update_html_links(self, filename, sorted_urls, hash_pattern, no_css=False, no_images=False, html_only=False):
         """
         Update the links in HTML files.
         There has got to be a better way of achieving this instead of loading the entire contents into memory again.
         We unfortunately dont have the updated file names until the other files have been parsed...
 
         Args:
-            filepath (str): The path to the HTML file.
+            filename (str): The relative path to the HTML file.
             sorted_urls (list): A list of URLs sorted by length.
             hash_pattern (re.Pattern): A compiled regular expression pattern for hashed filenames.
         """
@@ -276,7 +300,7 @@ class MHTMLExtractor:
         if html_only:
             return
 
-        with open(filepath, "r", encoding="utf-8") as html_file:
+        with self.fs.open(filename, "r", encoding="utf-8") as html_file:
             content = html_file.read()
 
             # For each original URL, replace it with the new filename in the content
@@ -298,7 +322,7 @@ class MHTMLExtractor:
                     if not hash_pattern.match(content, match.end()):
                         content = content[: match.start()] + new_filename + content[match.end() :]
 
-        with open(filepath, "w", encoding="utf-8") as html_file:
+        with self.fs.open(filename, "w", encoding="utf-8") as html_file:
             html_file.write(content)
 
     def extract(self, no_css=False, no_images=False, html_only=False):
@@ -307,61 +331,56 @@ class MHTMLExtractor:
         """
         temp_buffer_chunks = []  # Use a list to store chunks and join them when needed
 
-        try:
-            with open(self.mhtml_path, "r", encoding="utf-8") as file:
-                # Continuously read from the MHTML file until no more content is left
-                while True:
-                    chunk = file.read(self.buffer_size)
-                    if not chunk:
-                        break
+        with open(self.mhtml_path, "r", encoding="utf-8") as file:
+            # Continuously read from the MHTML file until no more content is left
+            while True:
+                chunk = file.read(self.buffer_size)
+                if not chunk:
+                    break
 
-                    """
-                    Python strings are immutable, This means that every time you concatenate two strings using 
-                    the '+' operator, a new string is created in memory, and the contents of the two original 
-                    strings are copied over to this new string. The time complexity of the following line is O(n^2)
-                    
-                    temp_buffer_chunks += chunk
-                    
-                    On the other hand, the list join method avoids this overhead by creating a single new string 
-                    and copying the content of each string in the list to the new string only once. This results 
-                    in a linear time complexity of O(n).
-                    """
-                    temp_buffer_chunks.append(chunk)
+                """
+                Python strings are immutable, This means that every time you concatenate two strings using 
+                the '+' operator, a new string is created in memory, and the contents of the two original 
+                strings are copied over to this new string. The time complexity of the following line is O(n^2)
+                
+                temp_buffer_chunks += chunk
+                
+                On the other hand, the list join method avoids this overhead by creating a single new string 
+                and copying the content of each string in the list to the new string only once. This results 
+                in a linear time complexity of O(n).
+                """
+                temp_buffer_chunks.append(chunk)
 
-                    # If the boundary hasn't been determined yet, try to find it
-                    if not self.boundary:
-                        self.boundary = self._read_boundary("".join(temp_buffer_chunks))
+                # If the boundary hasn't been determined yet, try to find it
+                if not self.boundary:
+                    self.boundary = self._read_boundary("".join(temp_buffer_chunks))
 
-                    # Split the buffer by the boundary to process each part
-                    parts = "".join(temp_buffer_chunks).split("--" + self.boundary)
+                # Split the buffer by the boundary to process each part
+                parts = "".join(temp_buffer_chunks).split("--" + self.boundary)
 
-                    # Retain the last part in case it's incomplete
-                    temp_buffer_chunks = [parts[-1]]  # Retain the last part in case it's incomplete
+                # Retain the last part in case it's incomplete
+                temp_buffer_chunks = [parts[-1]]  # Retain the last part in case it's incomplete
 
-                    for part in parts[:-1]:
-                        if self.extracted_count > 0:  # Skip the headers
-                            self._process_part(part, no_css, no_images, html_only)
+                for part in parts[:-1]:
+                    if self.extracted_count > 0:  # Skip the headers
+                        self._process_part(part, no_css, no_images, html_only)
 
-                        self.extracted_count += 1
+                    self.extracted_count += 1
 
-            if html_only:
-                return
+        if html_only:
+            return
 
-            # After processing all parts, sort URLs by length (longest first)
-            sorted_urls = sorted(self.url_mapping.keys(), key=len, reverse=True)
-            hash_pattern = re.compile(r"_[a-f0-9]{32}\.html")
+        # After processing all parts, sort URLs by length (longest first)
+        sorted_urls = sorted(self.url_mapping.keys(), key=len, reverse=True)
+        hash_pattern = re.compile(r"_[a-f0-9]{32}\.html")
 
-            # Update links in all saved HTML files to reflect new filenames
-            for filename in self.saved_html_files:
-                filepath = os.path.join(self.output_dir, filename)
-                self._update_html_links(filepath, sorted_urls, hash_pattern)
+        # Update links in all saved HTML files to reflect new filenames
+        for filename in self.saved_html_files:
+            self._update_html_links(filename, sorted_urls, hash_pattern)
 
-            logging.info(f"Extracted {self.extracted_count-1} files into {self.output_dir}")
-        except Exception as e:
-            logging.error(f"Error during extraction: {e}")
 
     def write_url_map(self, filename):
-        with open(os.path.join(self.output_dir, filename), "wb") as out_file:
+        with self.fs.open(filename, "wb") as out_file:
             for location, local_filename in self.url_mapping.items():
                 out_file.write(f"{local_filename}={location}\n".encode('utf-8'))
 
@@ -383,16 +402,23 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    fs = FolderStorage(output_dir=args.output_dir)
+
     # Example usage with command-line arguments
     extractor = MHTMLExtractor(
         mhtml_path=args.mhtml_path,
-        output_dir=args.output_dir,
+        fs=fs,
         buffer_size=args.buffer_size,
         clear_output_dir=args.clear_output_dir,
     )
     extractor.add_hash_to_names = not args.no_hash
     extractor.use_first_file_as_index = args.index_first
 
-    extractor.extract(args.no_css, args.no_images, args.html_only)
+    try:
+        extractor.extract(args.no_css, args.no_images, args.html_only)
+        logging.info(f"Extracted {extractor.extracted_count-1} files into {args.output_dir}")
+    except Exception as e:
+        logging.error(f"Error during extraction: {e}")
+
     if args.url_map:
         extractor.write_url_map('urls.dat')
