@@ -32,6 +32,9 @@ class MHTMLExtractor:
         url_mapping (dict): A dictionary mapping original URLs to new filenames.
     """
 
+    add_hash_to_names = True
+    use_first_file_as_index = False
+
     def __init__(self, mhtml_path, output_dir, buffer_size=8192, clear_output_dir=False):
         """
         Initialize the MHTMLExtractor class.
@@ -151,9 +154,12 @@ class MHTMLExtractor:
                 location = content_location_match.group(1)
                 parsed_url = urlparse(location)
                 base_name = os.path.basename(unquote(parsed_url.path)) or parsed_url.netloc
-                url_hash = hashlib.md5(location.encode()).hexdigest()
 
-                filename = f"{base_name}_{url_hash}{extension or ''}"
+                if self.add_hash_to_names:
+                    url_hash = hashlib.md5(location.encode()).hexdigest()
+                    filename = f"{base_name}_{url_hash}{extension or ''}"
+                else:
+                    filename = f"{base_name}{extension or ''}"
                 original_filename = filename
                 counter = 1
 
@@ -164,6 +170,9 @@ class MHTMLExtractor:
             else:
                 # If Content-Location isn't provided, generate a random filename
                 filename = str(uuid.uuid4()) + (extension or "")
+            if self.use_first_file_as_index and (extension in ['.htm', '.html']):
+                if not os.path.exists(os.path.join(self.output_dir, 'index.html')):
+                    filename = 'index.html'
             return filename
         except Exception as e:
             logging.error(f"Error extracting filename: {e}")
@@ -356,6 +365,8 @@ if __name__ == "__main__":
     parser.add_argument("--no_images", action="store_true", help="If set, image files will not be extracted.")
     parser.add_argument("--html_only", action="store_true", help="If set, only HTML files will be extracted.")
     # parser.add_argument("--main_only", action="store_true", help="If set, only the main HTML file will be extracted.")
+    parser.add_argument("--no-hash", action="store_true", help="If set, no hash will be added to the resource names.")
+    parser.add_argument("--index-first", action="store_true", help="If set, the first MHTML element will be renamed to index.html.")
 
     args = parser.parse_args()
 
@@ -366,5 +377,7 @@ if __name__ == "__main__":
         buffer_size=args.buffer_size,
         clear_output_dir=args.clear_output_dir,
     )
+    extractor.add_hash_to_names = not args.no_hash
+    extractor.use_first_file_as_index = args.index_first
 
     extractor.extract(args.no_css, args.no_images, args.html_only)
