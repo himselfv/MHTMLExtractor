@@ -353,6 +353,11 @@ class MHTMLExtractor:
         except Exception as e:
             logging.error(f"Error during extraction: {e}")
 
+    def write_url_map(self, filename):
+        with open(os.path.join(self.output_dir, filename), "wb") as out_file:
+            for location, local_filename in self.url_mapping.items():
+                out_file.write(f"{local_filename}={location}\n".encode('utf-8'))
+
 
 if __name__ == "__main__":
     # Argument parsing setup
@@ -367,6 +372,7 @@ if __name__ == "__main__":
     # parser.add_argument("--main_only", action="store_true", help="If set, only the main HTML file will be extracted.")
     parser.add_argument("--no-hash", action="store_true", help="If set, no hash will be added to the resource names.")
     parser.add_argument("--index-first", action="store_true", help="If set, the first MHTML element will be renamed to index.html.")
+    parser.add_argument("--url-map", action="store_true", help="If set, creates an additional map file from filenames to original URIs.")
 
     args = parser.parse_args()
 
@@ -381,3 +387,5 @@ if __name__ == "__main__":
     extractor.use_first_file_as_index = args.index_first
 
     extractor.extract(args.no_css, args.no_images, args.html_only)
+    if args.url_map:
+        extractor.write_url_map('urls.dat')
