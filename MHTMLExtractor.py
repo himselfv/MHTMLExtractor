@@ -1,4 +1,5 @@
 import os
+import io
 import re
 import mimetypes
 import uuid
@@ -7,6 +8,7 @@ import quopri
 from urllib.parse import urlparse, unquote
 import hashlib
 import shutil
+import zipfile
 import logging
 import argparse
 
@@ -24,28 +26,25 @@ class FolderStorage:
         output_dir (str): The directory where extracted files will be saved.
     """
 
-    def __init__(self, output_dir):
+    def __init__(self, output_dir, clear_output_dir=False):
         """
             output_dir (str): Output directory for the extracted files.
+            clear_output_dir (bool, optional): If True, clears the output directory before extraction. Defaults to False.
         """
         self.output_dir = output_dir
-        self.ensure_directory_exists(self.output_dir)
+        self.ensure_directory_exists(self.output_dir, clear_output_dir)
 
-    def ensure_directory_exists(self, directory_path):
+    def ensure_directory_exists(self, directory_path, clear=False):
         try:
             if not os.path.exists(directory_path):
                 os.makedirs(directory_path)
-        except Exception as e:
-            logging.error(f"Error during directory setup: {e}")
-
-    def clear_contents(self):
-        try:
-            for filename in os.listdir(directory_path):
-                file_path = os.path.join(directory_path, filename)
-                if os.path.isfile(file_path):
-                    os.unlink(file_path)
-                elif os.path.isdir(file_path):
-                    shutil.rmtree(file_path)
+            elif clear:
+                for filename in os.listdir(directory_path):
+                    file_path = os.path.join(directory_path, filename)
+                    if os.path.isfile(file_path):
+                        os.unlink(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
         except Exception as e:
             logging.error(f"Error during directory setup: {e}")
 
@@ -54,6 +53,29 @@ class FolderStorage:
 
     def open(self, filename, *args, **kwargs):
         return open(os.path.join(self.output_dir, filename), *args, **kwargs)
+
+class ZipStorage:
+    def __init__(self, filepath, clear_output_dir=False):
+        self.zip = zipfile.ZipFile(filepath,
+            mode='w' if clear_output_dir else 'a',
+            compression=zipfile.ZIP_BZIP2,
+            compresslevel=5,
+            )
+
+    def path_exists(self, filename):
+        return filename in self.zip.namelist()
+
+    def open(self, filename, **kwargs):
+        encoding = None
+        if 'encoding' in kwargs:
+            encoding = kwargs['encoding']
+            del kwargs['encoding']
+        if 'mode' in kwargs:
+            kwargs['mode'] = kwargs['mode'].replace('b', '') # It's always 'b' with zipfile
+        fd = self.zip.open(filename, **kwargs)
+        if encoding:
+            fd = io.TextIOWrapper(fd, encoding)
+        return fd
 
 
 class MHTMLExtractor:
@@ -72,14 +94,13 @@ class MHTMLExtractor:
     add_hash_to_names = True
     use_first_file_as_index = False
 
-    def __init__(self, mhtml_path, fs, buffer_size=8192, clear_output_dir=False):
+    def __init__(self, mhtml_path, fs, buffer_size=8192):
         """
         Initialize the MHTMLExtractor class.
 
         Args:
             mhtml_path (str): Path to the MHTML document.
             buffer_size (int, optional): Buffer size for reading the MHTML file. Defaults to 8192.
-            clear_output_dir (bool, optional): If True, clears the output directory before extraction. Defaults to False.
         """
         self.mhtml_path = mhtml_path
         self.fs = fs
@@ -88,9 +109,6 @@ class MHTMLExtractor:
         self.extracted_count = 0
         self.url_mapping = {}  # Mapping between Content-Location and new filenames
         self.saved_html_files = []  # List to keep track of saved HTML filenames
-
-        if clear_output_dir:
-            self.fs.clear_contents()
 
     def is_text_content(decoded_content):
         """Determine if the given content is likely to be human-readable text."""
@@ -282,7 +300,7 @@ class MHTMLExtractor:
             self.saved_html_files.append(filename)
 
         # Try to write the decoded content to the specified file
-        with self.fs.open(filename, "wb") as out_file:
+        with self.fs.open(filename, mode="wb") as out_file:
             out_file.write(decoded_body)
 
     def _update_html_links(self, filename, sorted_urls, hash_pattern, no_css=False, no_images=False, html_only=False):
@@ -300,7 +318,7 @@ class MHTMLExtractor:
         if html_only:
             return
 
-        with self.fs.open(filename, "r", encoding="utf-8") as html_file:
+        with self.fs.open(filename, mode="r", encoding="utf-8") as html_file:
             content = html_file.read()
 
             # For each original URL, replace it with the new filename in the content
@@ -322,7 +340,7 @@ class MHTMLExtractor:
                     if not hash_pattern.match(content, match.end()):
                         content = content[: match.start()] + new_filename + content[match.end() :]
 
-        with self.fs.open(filename, "w", encoding="utf-8") as html_file:
+        with self.fs.open(filename, mode="w", encoding="utf-8") as html_file:
             html_file.write(content)
 
     def extract(self, no_css=False, no_images=False, html_only=False):
@@ -380,7 +398,7 @@ class MHTMLExtractor:
 
 
     def write_url_map(self, filename):
-        with self.fs.open(filename, "wb") as out_file:
+        with self.fs.open(filename, mode="wb") as out_file:
             for location, local_filename in self.url_mapping.items():
                 out_file.write(f"{local_filename}={location}\n".encode('utf-8'))
 
@@ -390,6 +408,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract files from MHTML documents.")
     parser.add_argument("mhtml_path", type=str, help="Path to the MHTML document.")
     parser.add_argument("--output_dir", type=str, default=".", help="Output directory for the extracted files.")
+    parser.add_argument("--output-zip", type=str, default=None, help="Output the extracted files into this ZIP file")
     parser.add_argument("--buffer_size", type=int, default=8192, help="Buffer size for reading the MHTML file. Defaults to 8192.")
     parser.add_argument("--clear_output_dir", action="store_true", help="If set, clears the output directory before extraction.")
     parser.add_argument("--no_css", action="store_true", help="If set, CSS files will not be extracted.")
@@ -402,14 +421,16 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    fs = FolderStorage(output_dir=args.output_dir)
+    if args.output_zip:
+        fs = ZipStorage(args.output_zip, clear_output_dir=args.clear_output_dir)
+    else:
+        fs = FolderStorage(output_dir=args.output_dir, clear_output_dir=args.clear_output_dir)
 
     # Example usage with command-line arguments
     extractor = MHTMLExtractor(
         mhtml_path=args.mhtml_path,
         fs=fs,
         buffer_size=args.buffer_size,
-        clear_output_dir=args.clear_output_dir,
     )
     extractor.add_hash_to_names = not args.no_hash
     extractor.use_first_file_as_index = args.index_first
